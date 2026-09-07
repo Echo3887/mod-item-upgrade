@@ -1631,6 +1631,128 @@ bool ItemUpgrade::HandlePurchaseWeaponUpgrade(Player* player, Item* item, const 
     return true;
 }
 
+ItemUpgrade::WeaponUpgradeResult
+ItemUpgrade::SetWeaponDamageUpgrade(Player* player, Item* item, uint16 rank)
+{
+    // ------------------------------------------------------------
+    // 1. Grundlegende Parameter prüfen
+    // ------------------------------------------------------------
+
+    if (!player)
+        return WeaponUpgradeResult::InvalidPlayer;
+
+    if (!item)
+        return WeaponUpgradeResult::InvalidItem;
+
+    // ------------------------------------------------------------
+    // 2. Item muss dem Spieler gehören
+    // ------------------------------------------------------------
+
+    if (item->GetOwnerGUID() != player->GetGUID())
+        return WeaponUpgradeResult::ItemNotOwned;
+
+    // ------------------------------------------------------------
+    // 3. Item muss eine gültige Waffe für Weapon-Damage-Upgrades sein
+    // ------------------------------------------------------------
+
+    if (!IsValidWeaponForUpgrade(item, player))
+        return WeaponUpgradeResult::InvalidWeapon;
+
+    // ------------------------------------------------------------
+    // 4. Rank 1-48 bzw. ein konfigurierter gültiger Rank
+    //    muss in weaponUpgradeStats existieren.
+    //
+    //    Wichtig:
+    //    Das Modul speichert den Prozentwert, nicht den Rank.
+    // ------------------------------------------------------------
+
+    if (rank == 0)
+        return WeaponUpgradeResult::InvalidRank;
+
+    const UpgradeStat* upgrade = nullptr;
+
+    for (const UpgradeStat& candidate : weaponUpgradeStats)
+    {
+        if (candidate.statRank == rank)
+        {
+            upgrade = &candidate;
+            break;
+        }
+    }
+
+    if (!upgrade)
+        return WeaponUpgradeResult::InvalidRank;
+
+    // ------------------------------------------------------------
+    // 5. Bereits vorhandenen Upgrade-Rang ermitteln
+    // ------------------------------------------------------------
+
+    const UpgradeStat* currentUpgrade =
+        FindUpgradeForWeaponDamage(player, item);
+
+    if (currentUpgrade &&
+        currentUpgrade->statRank >= upgrade->statRank)
+    {
+        return WeaponUpgradeResult::RankNotHigher;
+    }
+
+    // ------------------------------------------------------------
+    // 6. Bei ausgerüstetem Item alte Item-Mods entfernen
+    // ------------------------------------------------------------
+
+    const bool equipped = item->IsEquipped();
+
+    if (equipped)
+        player->_ApplyItemMods(item, item->GetSlot(), false);
+
+    // ------------------------------------------------------------
+    // 7. Bestehende Modul-Funktion verwenden.
+    //
+    //    Dadurch werden gleichzeitig:
+    //
+    //      - character_weapon_upgrade
+    //      - characterWeaponUpgradeData
+    //
+    //    aktualisiert.
+    // ------------------------------------------------------------
+
+    const bool saved =
+        HandlePurchaseWeaponUpgrade(
+            player,
+            item,
+            upgrade,
+            false);
+
+    if (!saved)
+    {
+        // Falls etwas schiefgeht, alte Item-Mods wieder aktivieren.
+        if (equipped)
+            player->_ApplyItemMods(item, item->GetSlot(), true);
+
+        return WeaponUpgradeResult::DatabaseError;
+    }
+
+    // ------------------------------------------------------------
+    // 8. Neue Weapon-Mods anwenden
+    // ------------------------------------------------------------
+
+    if (equipped)
+        player->_ApplyItemMods(item, item->GetSlot(), true);
+
+    // ------------------------------------------------------------
+    // 9. Client aktualisieren
+    // ------------------------------------------------------------
+
+    SendItemPacket(player, item);
+
+    // Weapon Speed muss ebenfalls neu berechnet werden,
+    // falls das Modul diese Berechnung abhängig vom Weapon-State
+    // aktualisiert.
+    RefreshWeaponSpeed(player);
+
+    return WeaponUpgradeResult::Success;
+}
+
 bool ItemUpgrade::PurchaseUpgrade(Player* player)
 {
     PagedData& pagedData = GetPagedData(player);
