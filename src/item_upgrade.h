@@ -334,6 +334,30 @@ public:
         Item* item,
         uint32 statType,
         uint16 rank);
+		
+	enum class KeeperProgressionResult : uint8
+	{
+		Success = 0,
+		InvalidPlayer = 1,
+		InvalidItem = 2,
+		ItemNotOwned = 3,
+		InvalidRank = 4,
+		InvalidBoss = 5,
+		InvalidStat = 6,
+		StatNotPresent = 7,
+		StatNotAllowed = 8,
+		RankNotHigher = 9,
+		AlreadyCompleted = 10,
+		DatabaseError = 11
+	};
+
+	KeeperProgressionResult SetKeeperWeaponProgression(
+		Player* player,
+		Item* item,
+		uint32 bossEntry,
+		uint16 rank,
+		const std::vector<uint32>& statTypes,
+		bool weaponDamage);
 
     void BuildWeaponUpgradeReqs();
     void BuildWeaponSpeedUpgradeReqs();
