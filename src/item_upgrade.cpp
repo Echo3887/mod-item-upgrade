@@ -1914,6 +1914,466 @@ ItemUpgrade::SetItemStatUpgrade(
     return StatUpgradeResult::Success;
 }
 
+ItemUpgrade::KeeperProgressionResult
+ItemUpgrade::SetKeeperWeaponProgression(
+    Player* player,
+    Item* item,
+    uint32 bossEntry,
+    uint16 rank,
+    const std::vector<uint32>& statTypes,
+    bool weaponDamage)
+{
+    // ============================================================
+    // 1. Grundlegende Parameter
+    // ============================================================
+
+    if (!player)
+        return KeeperProgressionResult::InvalidPlayer;
+
+    if (!item)
+        return KeeperProgressionResult::InvalidItem;
+
+    if (item->GetOwnerGUID() != player->GetGUID())
+        return KeeperProgressionResult::ItemNotOwned;
+
+    if (bossEntry == 0)
+        return KeeperProgressionResult::InvalidBoss;
+
+    if (rank == 0)
+        return KeeperProgressionResult::InvalidRank;
+
+    const uint32 guid = player->GetGUID().GetCounter();
+    const uint32 itemGuid = item->GetGUID().GetCounter();
+
+    // ============================================================
+    // 2. Weapon-Damage-Upgrade vorbereiten
+    //
+    // Wichtig:
+    // weaponUpgradeStats speichert die konfigurierten Prozente.
+    // Der Rank wird auf den entsprechenden Prozentwert abgebildet.
+    // ============================================================
+
+    const UpgradeStat* weaponUpgrade = nullptr;
+    const UpgradeStat* currentWeaponUpgrade = nullptr;
+
+    if (weaponDamage)
+    {
+        if (!IsValidWeaponForUpgrade(item, player))
+            return KeeperProgressionResult::InvalidItem;
+
+        for (const UpgradeStat& candidate : weaponUpgradeStats)
+        {
+            if (candidate.statRank == rank)
+            {
+                weaponUpgrade = &candidate;
+                break;
+            }
+        }
+
+        if (!weaponUpgrade)
+            return KeeperProgressionResult::InvalidRank;
+
+        currentWeaponUpgrade = FindUpgradeForWeaponDamage(player, item);
+
+        if (currentWeaponUpgrade &&
+            currentWeaponUpgrade->statRank >= weaponUpgrade->statRank)
+        {
+            return KeeperProgressionResult::RankNotHigher;
+        }
+    }
+
+    // ============================================================
+    // 3. Item-Stats vorbereiten
+    //
+    // Alle Validierungen passieren VOR der Transaction.
+    // Dadurch können wir nachher garantieren:
+    //
+    //   entweder ALLES wird gespeichert
+    //   oder NICHTS wird gespeichert.
+    // ============================================================
+
+    struct KeeperStatUpgrade
+    {
+        uint32 statType;
+        const UpgradeStat* upgrade;
+        const UpgradeStat* currentUpgrade;
+    };
+
+    std::vector<KeeperStatUpgrade> statUpgrades;
+    statUpgrades.reserve(statTypes.size());
+
+    std::vector<_ItemStat> itemStatInfo = LoadItemStatInfo(item);
+
+    for (uint32 statType : statTypes)
+    {
+        // --------------------------------------------------------
+        // Doppelte Stat-Typen verhindern
+        // --------------------------------------------------------
+
+        for (const KeeperStatUpgrade& existing : statUpgrades)
+        {
+            if (existing.statType == statType)
+                return KeeperProgressionResult::InvalidStat;
+        }
+
+        // --------------------------------------------------------
+        // Stat grundsätzlich gültig?
+        // --------------------------------------------------------
+
+        if (!IsValidStatType(statType))
+            return KeeperProgressionResult::InvalidStat;
+
+        if (!IsAllowedStatType(statType))
+            return KeeperProgressionResult::StatNotAllowed;
+
+        // --------------------------------------------------------
+        // Stat muss auf dem konkreten Item vorhanden sein
+        // --------------------------------------------------------
+
+        const _ItemStat* itemStat = GetStatByType(itemStatInfo, statType);
+
+        if (!itemStat)
+            return KeeperProgressionResult::StatNotPresent;
+
+        // --------------------------------------------------------
+        // Gewünschten Upgrade-Rank suchen
+        // --------------------------------------------------------
+
+        const UpgradeStat* upgrade =
+            FindUpgradeStat(statType, rank);
+
+        if (!upgrade)
+            return KeeperProgressionResult::InvalidRank;
+
+        // --------------------------------------------------------
+        // Ist dieses Upgrade für dieses Item erlaubt?
+        // --------------------------------------------------------
+
+        if (!CanApplyUpgradeForItem(item, upgrade))
+            return KeeperProgressionResult::StatNotAllowed;
+
+        // --------------------------------------------------------
+        // Aktuellen Rank feststellen
+        // --------------------------------------------------------
+
+        const UpgradeStat* currentUpgrade =
+            FindUpgradeForItem(player, item, statType);
+
+        if (currentUpgrade &&
+            currentUpgrade->statRank >= upgrade->statRank)
+        {
+            return KeeperProgressionResult::RankNotHigher;
+        }
+
+        KeeperStatUpgrade statUpgrade;
+        statUpgrade.statType = statType;
+        statUpgrade.upgrade = upgrade;
+        statUpgrade.currentUpgrade = currentUpgrade;
+
+        statUpgrades.push_back(statUpgrade);
+    }
+
+    // ============================================================
+    // 4. Prüfen, ob dieser Boss für dieses Item bereits gespeichert
+    // wurde.
+    //
+    // Kein INSERT IGNORE!
+    //
+    // Die Transaction soll einen Fehler bekommen, falls parallel
+    // derselbe Boss eingetragen wurde.
+    // ============================================================
+
+    {
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT 1 "
+            "FROM keeper_weapon_progression "
+            "WHERE item_guid = {} AND boss_entry = {} "
+            "LIMIT 1",
+            itemGuid,
+            bossEntry);
+
+        if (result)
+            return KeeperProgressionResult::AlreadyCompleted;
+    }
+
+    // ============================================================
+    // 5. Transaction aufbauen
+    //
+    // Ab hier werden KEINE normalen Execute()-Aufrufe mehr benutzt.
+    // ============================================================
+
+    CharacterDatabaseTransaction trans =
+        CharacterDatabase.BeginTransaction();
+
+    // ------------------------------------------------------------
+    // 5a. Weapon Damage
+    // ------------------------------------------------------------
+
+    if (weaponUpgrade)
+    {
+        std::ostringstream query;
+
+        query
+            << "REPLACE INTO character_weapon_upgrade "
+            << "(guid, item_guid, upgrade_perc) VALUES ("
+            << guid << ", "
+            << itemGuid << ", "
+            << weaponUpgrade->statModPct
+            << ")";
+
+        trans->Append(query.str().c_str());
+    }
+
+    // ------------------------------------------------------------
+    // 5b. Normale Item-Stats
+    // ------------------------------------------------------------
+
+    for (const KeeperStatUpgrade& statUpgrade : statUpgrades)
+    {
+        const UpgradeStat* upgrade = statUpgrade.upgrade;
+        const UpgradeStat* currentUpgrade = statUpgrade.currentUpgrade;
+
+        if (currentUpgrade)
+        {
+            // Bestehenden Stat-Rank auf den neuen stat_id umstellen.
+
+            std::ostringstream query;
+
+            query
+                << "UPDATE character_item_upgrade SET "
+                << "stat_id = " << upgrade->statId
+                << " WHERE guid = " << guid
+                << " AND item_guid = " << itemGuid
+                << " AND stat_id = " << currentUpgrade->statId;
+
+            trans->Append(query.str().c_str());
+        }
+        else
+        {
+            // Erster Rank für diesen Stat.
+
+            std::ostringstream query;
+
+            query
+                << "INSERT INTO character_item_upgrade "
+                << "(guid, item_guid, stat_id) VALUES ("
+                << guid << ", "
+                << itemGuid << ", "
+                << upgrade->statId
+                << ")";
+
+            trans->Append(query.str().c_str());
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 5c. Keeper Boss-Kill
+    //
+    // kill_order == rank
+    //
+    // Kein INSERT IGNORE:
+    // Primary Key (item_guid, boss_entry) und
+    // UNIQUE(item_guid, kill_order) sollen Fehler erzeugen,
+    // damit die komplette Transaction scheitert.
+    // ------------------------------------------------------------
+
+    {
+        std::ostringstream query;
+
+        query
+            << "INSERT INTO keeper_weapon_progression "
+            << "(guid, item_guid, boss_entry, kill_order) VALUES ("
+            << guid << ", "
+            << itemGuid << ", "
+            << bossEntry << ", "
+            << rank
+            << ")";
+
+        trans->Append(query.str().c_str());
+    }
+
+    // ============================================================
+    // 6. Transaction synchron ausführen
+    //
+    // DirectCommitTransaction() liefert in deinem aktuellen
+    // AzerothCore keine bool-Rückgabe.
+    //
+    // Deshalb folgt direkt danach eine DB-Verifikation.
+    // ============================================================
+
+    CharacterDatabase.DirectCommitTransaction(trans);
+
+    // ============================================================
+    // 7. Nach dem Commit ALLE erwarteten Daten verifizieren
+    //
+    // Erst wenn ALLE Prüfungen erfolgreich sind, verändern wir
+    // die In-Memory-Caches.
+    // ============================================================
+
+    // ------------------------------------------------------------
+    // 7a. Weapon Damage verifizieren
+    // ------------------------------------------------------------
+
+    if (weaponUpgrade)
+    {
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT upgrade_perc "
+            "FROM character_weapon_upgrade "
+            "WHERE guid = {} AND item_guid = {} "
+            "LIMIT 1",
+            guid,
+            itemGuid);
+
+        if (!result)
+            return KeeperProgressionResult::DatabaseError;
+
+        Field* fields = result->Fetch();
+        float savedPerc = fields[0].Get<float>();
+
+        if (savedPerc != weaponUpgrade->statModPct)
+            return KeeperProgressionResult::DatabaseError;
+    }
+
+    // ------------------------------------------------------------
+    // 7b. Item-Stats verifizieren
+    // ------------------------------------------------------------
+
+    for (const KeeperStatUpgrade& statUpgrade : statUpgrades)
+    {
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT stat_id "
+            "FROM character_item_upgrade "
+            "WHERE guid = {} AND item_guid = {} "
+            "AND stat_id = {} "
+            "LIMIT 1",
+            guid,
+            itemGuid,
+            statUpgrade.upgrade->statId);
+
+        if (!result)
+            return KeeperProgressionResult::DatabaseError;
+    }
+
+    // ------------------------------------------------------------
+    // 7c. Keeper-Eintrag verifizieren
+    // ------------------------------------------------------------
+
+    {
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT 1 "
+            "FROM keeper_weapon_progression "
+            "WHERE item_guid = {} "
+            "AND boss_entry = {} "
+            "AND kill_order = {} "
+            "LIMIT 1",
+            itemGuid,
+            bossEntry,
+            rank);
+
+        if (!result)
+            return KeeperProgressionResult::DatabaseError;
+    }
+
+    // ============================================================
+    // 8. Jetzt erst die In-Memory-Caches aktualisieren
+    //
+    // Bis hierhin wurde KEIN Cache verändert.
+    // ============================================================
+
+    // ------------------------------------------------------------
+    // 8a. Weapon-Damage-Cache
+    // ------------------------------------------------------------
+
+    if (weaponUpgrade)
+    {
+        std::vector<CharacterUpgrade>& upgrades =
+            characterWeaponUpgradeData[guid];
+
+        auto citer = std::remove_if(
+            upgrades.begin(),
+            upgrades.end(),
+            [&](const CharacterUpgrade& existing)
+            {
+                return existing.itemGuid == item->GetGUID();
+            });
+
+        upgrades.erase(citer, upgrades.end());
+
+        CharacterUpgrade newUpgrade;
+        newUpgrade.guid = guid;
+        newUpgrade.itemGuid = item->GetGUID();
+        newUpgrade.upgradeStat = weaponUpgrade;
+        newUpgrade.upgradeStatModPct = weaponUpgrade->statModPct;
+
+        upgrades.push_back(newUpgrade);
+    }
+
+    // ------------------------------------------------------------
+    // 8b. Stat-Cache
+    // ------------------------------------------------------------
+
+    if (!statUpgrades.empty())
+    {
+        std::vector<CharacterUpgrade>& upgrades =
+            characterUpgradeData[guid];
+
+        for (const KeeperStatUpgrade& statUpgrade : statUpgrades)
+        {
+            const UpgradeStat* currentUpgrade =
+                statUpgrade.currentUpgrade;
+
+            const UpgradeStat* upgrade =
+                statUpgrade.upgrade;
+
+            if (currentUpgrade)
+            {
+                auto citer = std::remove_if(
+                    upgrades.begin(),
+                    upgrades.end(),
+                    [&](const CharacterUpgrade& existing)
+                    {
+                        return existing.itemGuid == item->GetGUID() &&
+                               existing.upgradeStat &&
+                               existing.upgradeStat->statId ==
+                                   currentUpgrade->statId;
+                    });
+
+                upgrades.erase(citer, upgrades.end());
+            }
+
+            CharacterUpgrade newUpgrade;
+            newUpgrade.guid = guid;
+            newUpgrade.itemGuid = item->GetGUID();
+            newUpgrade.upgradeStat = upgrade;
+
+            upgrades.push_back(newUpgrade);
+        }
+    }
+
+    // ============================================================
+    // 9. Item-Mods aktualisieren
+    //
+    // Erst jetzt, nachdem DB + Cache konsistent sind.
+    // ============================================================
+
+    const bool equipped = item->IsEquipped();
+
+    if (equipped)
+        player->_ApplyItemMods(item, item->GetSlot(), false);
+
+    if (equipped)
+        player->_ApplyItemMods(item, item->GetSlot(), true);
+
+    // ============================================================
+    // 10. Client aktualisieren
+    // ============================================================
+
+    SendItemPacket(player, item);
+    RefreshWeaponSpeed(player);
+
+    return KeeperProgressionResult::Success;
+}
+
 bool ItemUpgrade::PurchaseUpgrade(Player* player)
 {
     PagedData& pagedData = GetPagedData(player);
