@@ -259,6 +259,43 @@ public:
     void UpdateVisualCache(Player* player);
     void VisualFeedback(Player* player);
 
+    enum class WeaponUpgradeResult : uint8
+    {
+        Success = 0,
+        InvalidPlayer = 1,
+        InvalidItem = 2,
+        InvalidWeapon = 3,
+        ItemNotOwned = 4,
+        InvalidRank = 5,
+        RankNotHigher = 6,
+        DatabaseError = 7
+    };
+
+    WeaponUpgradeResult SetWeaponDamageUpgrade(
+        Player* player,
+        Item* item,
+        uint16 rank);
+
+    enum class StatUpgradeResult : uint8
+    {
+        Success = 0,
+        InvalidPlayer = 1,
+        InvalidItem = 2,
+        ItemNotOwned = 3,
+        InvalidStat = 4,
+        InvalidRank = 5,
+        RankNotHigher = 6,
+        StatNotPresent = 7,
+        StatNotAllowed = 8,
+        DatabaseError = 9
+    };
+    
+    StatUpgradeResult SetItemStatUpgrade(
+        Player* player,
+        Item* item,
+        uint32 statType,
+        uint16 rank);
+
     bool ChooseRandomUpgrade(Player* player, Item* item);
 
     enum class WeaponUpgradeResult : uint8
