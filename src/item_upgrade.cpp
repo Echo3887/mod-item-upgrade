@@ -2088,13 +2088,16 @@ ItemUpgrade::SetKeeperWeaponProgression(
 
     {
         QueryResult result = CharacterDatabase.Query(
-            "SELECT 1 "
-            "FROM keeper_weapon_progression "
-            "WHERE item_guid = {} AND boss_entry = {} "
-            "LIMIT 1",
-            itemGuid,
-            bossEntry);
-			
+			"SELECT 1 "
+			"FROM keeper_weapon_progression "
+			"WHERE item_guid = {} AND boss_entry = {} "
+			"LIMIT 1",
+			itemGuid,
+			bossEntry);
+
+		if (result)
+			return KeeperProgressionResult::AlreadyCompleted;
+
 		QueryResult progressionCountResult = CharacterDatabase.Query(
 			"SELECT COUNT(*) "
 			"FROM keeper_weapon_progression "
@@ -2108,9 +2111,6 @@ ItemUpgrade::SetKeeperWeaponProgression(
 
 		if (rank != progressionCount + 1)
 			return KeeperProgressionResult::InvalidRank;
-
-        if (result)
-            return KeeperProgressionResult::AlreadyCompleted;
     }
 
     // ============================================================
