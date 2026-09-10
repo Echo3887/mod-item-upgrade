@@ -2359,11 +2359,12 @@ ItemUpgrade::SetKeeperWeaponProgression(
             }
 
             CharacterUpgrade newUpgrade;
-            newUpgrade.guid = guid;
-            newUpgrade.itemGuid = item->GetGUID();
-            newUpgrade.upgradeStat = upgrade;
+			newUpgrade.guid = guid;
+			newUpgrade.itemGuid = item->GetGUID();
+			newUpgrade.upgradeStat = upgrade;
+			newUpgrade.upgradeStatModPct = upgrade->statModPct;
 
-            upgrades.push_back(newUpgrade);
+			upgrades.push_back(newUpgrade);
         }
     }
 
