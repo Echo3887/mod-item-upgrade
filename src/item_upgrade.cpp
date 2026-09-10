@@ -2107,7 +2107,7 @@ ItemUpgrade::SetKeeperWeaponProgression(
 		if (!progressionCountResult)
 			return KeeperProgressionResult::DatabaseError;
 
-		uint64 progressionCount = progressionCountResult->Fetch()[0].GetUInt64();
+		uint64 progressionCount = progressionCountResult->Fetch()[0].Get<uint64>();
 
 		if (rank != progressionCount + 1)
 			return KeeperProgressionResult::InvalidRank;
@@ -2319,8 +2319,8 @@ ItemUpgrade::SetKeeperWeaponProgression(
         CharacterUpgrade newUpgrade;
 		newUpgrade.guid = guid;
 		newUpgrade.itemGuid = item->GetGUID();
-		newUpgrade.upgradeStat = upgrade;
-		newUpgrade.upgradeStatModPct = upgrade->statModPct;
+		newUpgrade.upgradeStat = weaponUpgrade;
+		newUpgrade.upgradeStatModPct = weaponUpgrade->statModPct;
 
 		upgrades.push_back(newUpgrade);
     }
