@@ -1935,6 +1935,9 @@ ItemUpgrade::SetKeeperWeaponProgression(
 
     if (item->GetOwnerGUID() != player->GetGUID())
         return KeeperProgressionResult::ItemNotOwned;
+	
+	if (!item->IsEquipped())
+		return KeeperProgressionResult::InvalidItem;
 
     if (bossEntry == 0)
         return KeeperProgressionResult::InvalidBoss;
@@ -2091,6 +2094,20 @@ ItemUpgrade::SetKeeperWeaponProgression(
             "LIMIT 1",
             itemGuid,
             bossEntry);
+			
+		QueryResult progressionCountResult = CharacterDatabase.Query(
+			"SELECT COUNT(*) "
+			"FROM keeper_weapon_progression "
+			"WHERE item_guid = {}",
+			item->GetGUID().GetCounter());
+
+		if (!progressionCountResult)
+			return KeeperProgressionResult::DatabaseError;
+
+		uint64 progressionCount = progressionCountResult->Fetch()[0].GetUInt64();
+
+		if (rank != progressionCount + 1)
+			return KeeperProgressionResult::InvalidRank;
 
         if (result)
             return KeeperProgressionResult::AlreadyCompleted;
